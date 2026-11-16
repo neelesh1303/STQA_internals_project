@@ -371,6 +371,279 @@ export const TEST_CASES = [
   },
 ];
 
+// ---------------------------------------------------------------- 20 additional cases (set 2)
+TEST_CASES.push(
+  {
+    id: 'TC003', section: 1, scenario: 'Register with duplicate username',
+    data: 'Existing username, different email', expected: 'Registration rejected',
+    async run({ call, newUser, uid }) {
+      const a = await newUser();
+      const r = await call('POST', '/api/auth/register', { body: { username: a.username, email: `other_${uid()}@qa.test`, password: 'Passw0rd!' } });
+      check(r.status === 409, short(r));
+      return `HTTP 409 — "${r.data.error}"`;
+    },
+  },
+  {
+    id: 'TC009', section: 1, scenario: 'Login with wrong password',
+    data: 'Valid username + wrong password', expected: 'Login rejected',
+    async run({ call, newUser }) {
+      const a = await newUser();
+      const r = await call('POST', '/api/auth/login', { body: { username: a.username, password: 'WrongPass99' } });
+      check(r.status === 401 && !r.data.token, short(r));
+      return `HTTP 401 — "${r.data.error}"; no token issued`;
+    },
+  },
+  {
+    id: 'TC012', section: 1, scenario: 'Use malformed JWT',
+    data: 'Bearer "abc" and "not.a.jwt"', expected: 'Request rejected',
+    async run({ call }) {
+      const codes = [];
+      for (const token of ['abc', 'not.a.jwt', 'eyJhbGciOiJub25lIn0.e30.']) {
+        const r = await call('GET', '/api/auth/me', { token });
+        check(r.status === 401, `token=${token} → ${short(r)}`);
+        codes.push(r.status);
+      }
+      return `All 3 malformed tokens → HTTP ${codes.join('/')} (incl. alg "none" token)`;
+    },
+  },
+  {
+    id: 'TC019', section: 2, scenario: 'Librarian accesses admin function',
+    data: 'Librarian token → stats, users, manuscripts', expected: 'Access allowed',
+    async run({ call, librarian }) {
+      const token = await librarian();
+      const out = [];
+      for (const p of ['/api/admin/stats', '/api/admin/users', '/api/admin/manuscripts']) {
+        const r = await call('GET', p, { token });
+        check(r.status === 200, `${p} → ${short(r)}`);
+        out.push(p.split('/').pop());
+      }
+      return `HTTP 200 for ${out.join(', ')}`;
+    },
+  },
+  {
+    id: 'TC022', section: 2, scenario: "Author edits another author's manuscript",
+    data: 'Second author edits/deletes author_demo manuscript', expected: 'Access denied',
+    async run(ctx) {
+      const owner = await ctx.author();
+      const m = await ctx.submitManuscript(owner, `QA Owned ${ctx.uid()}`);
+      ctx.cleanups.push(() => ctx.call('DELETE', `/api/author/manuscripts/${m.id}`, { token: owner }));
+      const other = await ctx.newUser('AUTHOR');
+      const edit = await ctx.call('PUT', `/api/author/manuscripts/${m.id}`, { token: other.token, body: { title: 'Hijacked' } });
+      const del = await ctx.call('DELETE', `/api/author/manuscripts/${m.id}`, { token: other.token });
+      check(edit.status === 403 && del.status === 403, `edit ${edit.status}, delete ${del.status}`);
+      const mine = await ctx.call('GET', '/api/author/manuscripts', { token: owner });
+      check(mine.data.manuscripts.find((x) => x.id === m.id)?.title === m.title, 'Manuscript was modified');
+      return `Edit → HTTP 403, delete → HTTP 403; title unchanged`;
+    },
+  },
+  {
+    id: 'TC029', section: 3, scenario: 'Search nonexistent title',
+    data: 'q = "zzqx no such book"', expected: 'No results',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const r = await ctx.call('GET', '/api/books?q=zzqx%20no%20such%20book', { token: s.token });
+      check(r.status === 200 && r.data.books.length === 0, short(r));
+      return 'HTTP 200 — 0 results (empty list, no error)';
+    },
+  },
+  {
+    id: 'TC035', section: 3, scenario: 'Open nonexistent book',
+    data: 'GET /api/books/999999', expected: '404 / error handled',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const r = await ctx.call('GET', '/api/books/999999', { token: s.token });
+      check(r.status === 404, short(r));
+      return `HTTP 404 — "${r.data.error}"`;
+    },
+  },
+  {
+    id: 'TC040', section: 3, scenario: 'Case variation in search',
+    data: 'q = "pragmatic" / "PRAGMATIC" / "PrAgMaTiC"', expected: 'Search behaves consistently',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const ids = [];
+      for (const q of ['pragmatic', 'PRAGMATIC', 'PrAgMaTiC']) {
+        const r = await ctx.call('GET', `/api/books?q=${q}`, { token: s.token });
+        ids.push(r.data.books.map((b) => b.id).join(','));
+      }
+      check(ids[0] && ids.every((x) => x === ids[0]), `Results differ: ${JSON.stringify(ids)}`);
+      return `All 3 spellings returned the same result set (book id ${ids[0]})`;
+    },
+  },
+  {
+    id: 'TC042', section: 4, scenario: 'Borrow unavailable book',
+    data: 'Book with 1 copy already borrowed by another user', expected: 'Borrow rejected',
+    async run(ctx) {
+      const lib = await ctx.librarian();
+      const add = await ctx.call('POST', '/api/admin/books', { token: lib, body: { title: `QA Single Copy ${ctx.uid()}`, author: 'QA', copies: 1 } });
+      check(add.status === 201, `Setup add book → ${short(add)}`);
+      ctx.cleanups.push(() => ctx.call('DELETE', `/api/admin/books/${add.data.book.id}`, { token: lib }));
+      const a = await ctx.newUser();
+      const b = await ctx.newUser();
+      const first = await ctx.borrow(a.token, add.data.book.id);
+      check(first.status === 201, `User A borrow → ${short(first)}`);
+      const r = await ctx.borrow(b.token, add.data.book.id);
+      check(r.status === 409, short(r));
+      return `Copies 1→0 after user A; user B → HTTP 409 "${r.data.error}"`;
+    },
+  },
+  {
+    id: 'TC051', section: 4, scenario: 'Borrow unapproved manuscript',
+    data: 'PENDING manuscript id', expected: 'Borrow rejected / not available',
+    async run(ctx) {
+      const owner = await ctx.author();
+      const m = await ctx.submitManuscript(owner, `QA Unapproved ${ctx.uid()}`);
+      ctx.cleanups.push(() => ctx.call('DELETE', `/api/author/manuscripts/${m.id}`, { token: owner }));
+      const s = await ctx.newUser();
+      const r = await ctx.borrow(s.token, m.id);
+      check(r.status === 404, short(r));
+      return `HTTP 404 — "${r.data.error}"`;
+    },
+  },
+  {
+    id: 'TC058', section: 5, scenario: 'Return already returned book',
+    data: 'Completed loan returned again', expected: 'Handled without duplicate return',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const [b] = await ctx.availableBooks(s.token, 1);
+      const before = (await ctx.book(s.token, b.id)).available_copies;
+      const loan = await ctx.borrow(s.token, b.id);
+      const id = loan.data.loan.id;
+      const r1 = await ctx.call('POST', `/api/loans/${id}/return`, { token: s.token });
+      const r2 = await ctx.call('POST', `/api/loans/${id}/return`, { token: s.token });
+      check(r1.status === 200 && r2.status === 409, `1st ${r1.status}, 2nd ${short(r2)}`);
+      const after = (await ctx.book(s.token, b.id)).available_copies;
+      check(after === before, `Availability ${before} → ${after} (double-counted)`);
+      return `1st return HTTP 200; 2nd HTTP 409 "${r2.data.error}"; copies not double-counted`;
+    },
+  },
+  {
+    id: 'TC065', section: 5, scenario: 'Return and verify history',
+    data: 'Borrow then return a book', expected: 'History updated',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const [b] = await ctx.availableBooks(s.token, 1);
+      const loan = await ctx.borrow(s.token, b.id);
+      await ctx.call('POST', `/api/loans/${loan.data.loan.id}/return`, { token: s.token });
+      const r = await ctx.call('GET', '/api/loans/me', { token: s.token });
+      const h = r.data.loans.find((l) => l.id === loan.data.loan.id);
+      check(h && h.status === 'RETURNED' && h.returned_at && h.title === b.title, `History: ${JSON.stringify(h)}`);
+      return `History shows "${b.title}" as RETURNED with a return timestamp`;
+    },
+  },
+  {
+    id: 'TC072', section: 6, scenario: 'Librarian rejects request',
+    data: 'Pending request, decision = REJECTED', expected: 'Status becomes rejected',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const c = await ctx.call('POST', '/api/requests', { token: s.token, body: { title: `QA Reject ${ctx.uid()}` } });
+      const lib = await ctx.librarian();
+      const r = await ctx.call('POST', `/api/admin/requests/${c.data.request.id}/resolve`, { token: lib, body: { decision: 'REJECTED', note: 'Out of print' } });
+      check(r.status === 200 && r.data.request.status === 'REJECTED', short(r));
+      const mine = await ctx.call('GET', '/api/requests', { token: s.token });
+      check(mine.data.requests[0]?.status === 'REJECTED' && mine.data.requests[0]?.librarian_note === 'Out of print', 'Student does not see rejection');
+      return `PENDING → REJECTED; student sees status and note "Out of print"`;
+    },
+  },
+  {
+    id: 'TC077', section: 6, scenario: 'Modify resolved request',
+    data: 'Already-approved request resolved again', expected: 'Invalid modification rejected',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const c = await ctx.call('POST', '/api/requests', { token: s.token, body: { title: `QA Resolved ${ctx.uid()}` } });
+      const lib = await ctx.librarian();
+      const id = c.data.request.id;
+      await ctx.call('POST', `/api/admin/requests/${id}/resolve`, { token: lib, body: { decision: 'APPROVED' } });
+      const r = await ctx.call('POST', `/api/admin/requests/${id}/resolve`, { token: lib, body: { decision: 'REJECTED' } });
+      check(r.status === 409, short(r));
+      const mine = await ctx.call('GET', '/api/requests', { token: s.token });
+      check(mine.data.requests[0]?.status === 'APPROVED', 'Status changed after resolution');
+      return `HTTP 409 — "${r.data.error}"; status stays APPROVED`;
+    },
+  },
+  {
+    id: 'TC092', section: 7, scenario: 'Librarian rejects manuscript',
+    data: 'Pending submission, decision = REJECTED', expected: 'Status becomes rejected',
+    async run(ctx) {
+      const owner = await ctx.author();
+      const title = `QA Rejected ${ctx.uid()}`;
+      const m = await ctx.submitManuscript(owner, title);
+      ctx.cleanups.push(() => ctx.call('DELETE', `/api/author/manuscripts/${m.id}`, { token: owner }));
+      const lib = await ctx.librarian();
+      const r = await ctx.call('POST', `/api/admin/manuscripts/${m.id}/decision`, { token: lib, body: { decision: 'REJECTED', note: 'Needs editing' } });
+      check(r.status === 200 && r.data.manuscript.status === 'REJECTED', short(r));
+      const s = await ctx.newUser();
+      const search = await ctx.call('GET', `/api/books?q=${encodeURIComponent(title)}`, { token: s.token });
+      check(search.data.books.length === 0, 'Rejected manuscript visible in catalog');
+      return `PENDING → REJECTED; not visible in catalog`;
+    },
+  },
+  {
+    id: 'TC105', section: 8, scenario: 'Duplicate review by same user',
+    data: 'Same book + same user reviews twice', expected: 'Duplicate handled according to rule',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const [b] = await ctx.availableBooks(s.token, 1);
+      const r1 = await ctx.call('POST', `/api/books/${b.id}/reviews`, { token: s.token, body: { rating: 4, text: 'QA first' } });
+      const r2 = await ctx.call('POST', `/api/books/${b.id}/reviews`, { token: s.token, body: { rating: 2, text: 'QA second' } });
+      check(r1.status === 201 && r2.status === 409, `1st ${r1.status}, 2nd ${short(r2)}`);
+      return `1st review HTTP 201; 2nd HTTP 409 "${r2.data.error}" (rule: one review per user per book)`;
+    },
+  },
+  {
+    id: 'TC115', section: 9, scenario: 'Remove own bookmark',
+    data: 'Existing bookmark', expected: 'Bookmark removed',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const [b] = await ctx.availableBooks(s.token, 1);
+      const c = await ctx.call('POST', '/api/bookmarks', { token: s.token, body: { bookId: b.id, page: 7 } });
+      check(c.status === 201, short(c));
+      const d = await ctx.call('DELETE', `/api/bookmarks/${c.data.bookmark.id}`, { token: s.token });
+      check(d.status === 200, short(d));
+      const list = await ctx.call('GET', '/api/bookmarks', { token: s.token });
+      check(list.data.bookmarks.length === 0, 'Bookmark still listed');
+      return `DELETE HTTP 200; bookmark list is now empty`;
+    },
+  },
+  {
+    id: 'TC125', section: 10, scenario: 'Notification isolation',
+    data: "User A reads/marks User B's notification", expected: 'Access denied / no leakage',
+    async run(ctx) {
+      const a = await ctx.newUser();
+      const b = await ctx.newUser();
+      const nb = (await ctx.call('GET', '/api/notifications', { token: b.token })).data.notifications[0];
+      const r = await ctx.call('POST', `/api/notifications/${nb.id}/read`, { token: a.token });
+      check(r.status === 404, short(r));
+      const listA = (await ctx.call('GET', '/api/notifications', { token: a.token })).data.notifications;
+      check(!listA.some((n) => n.id === nb.id), "User A can see User B's notification");
+      const stillUnread = (await ctx.call('GET', '/api/notifications', { token: b.token })).data.notifications.find((n) => n.id === nb.id);
+      check(stillUnread && !stillUnread.is_read, "B's notification state was changed by A");
+      return `HTTP 404 for A; A's list excludes B's notification; B's stays unread`;
+    },
+  },
+  {
+    id: 'TC134', section: 11, scenario: 'Unauthorized user manages users',
+    data: 'Student → GET /api/admin/users, POST /api/admin/books', expected: 'Access denied',
+    async run(ctx) {
+      const s = await ctx.newUser();
+      const r1 = await ctx.call('GET', '/api/admin/users', { token: s.token });
+      const r2 = await ctx.call('POST', '/api/admin/books', { token: s.token, body: { title: 'X', author: 'Y', copies: 1 } });
+      check(r1.status === 403 && r2.status === 403, `users ${r1.status}, books ${r2.status}`);
+      return `List users → HTTP 403; add book → HTTP 403`;
+    },
+  },
+  {
+    id: 'TC146', section: 12, scenario: 'Malformed JSON request',
+    data: '{"username": "x",   (truncated JSON)', expected: '400 / error handled',
+    async run({ call }) {
+      const r = await call('POST', '/api/auth/login', { raw: '{"username": "x",' });
+      check(r.status === 400 && /malformed/i.test(r.data.error), short(r));
+      return `HTTP 400 — "${r.data.error}" (no stack trace leaked)`;
+    },
+  },
+);
+TEST_CASES.sort((a, b) => a.id.localeCompare(b.id));
+
 // ---------------------------------------------------------------- runner
 export async function runCase(tc, base = '') {
   const ctx = createContext(createClient(base));

@@ -281,6 +281,29 @@ export function createApp({ dbFile = ':memory:' } = {}) {
     res.status(201).json({ manuscript: one('SELECT * FROM books WHERE id = ?', info.lastInsertRowid) });
   });
 
+  // Edit own manuscript. Approved manuscripts are locked; editing a rejected one resubmits it for review.
+  app.put('/api/author/manuscripts/:id', auth, requireRole('AUTHOR'), (req, res) => {
+    const id = toId(req.params.id);
+    const m = id && one('SELECT * FROM books WHERE id = ? AND submitted_by IS NOT NULL', id);
+    if (!m) return fail(res, 404, 'Manuscript not found');
+    if (m.submitted_by !== req.user.id) return fail(res, 403, 'Access denied: not your manuscript');
+    if (m.status === 'APPROVED') return fail(res, 409, 'Approved manuscripts are locked and cannot be edited');
+    const b = req.body || {};
+    const title = b.title === undefined ? m.title : str(b.title);
+    const description = b.description === undefined ? m.description : str(b.description);
+    const genre = b.genre === undefined ? m.genre : (str(b.genre) || 'General');
+    const pages = b.pages == null || b.pages === '' ? m.pages : Number(b.pages);
+    const fields = {};
+    if (!title) fields.title = 'Title is required';
+    else if (title.length > 200) fields.title = 'Title must be at most 200 characters';
+    if (description.length > 2000) fields.description = 'Description must be at most 2000 characters';
+    if (!Number.isInteger(pages) || pages < 1 || pages > 5000) fields.pages = 'Pages must be 1–5000';
+    if (Object.keys(fields).length) return fail(res, 400, 'Validation failed', { fields });
+    run(`UPDATE books SET title = ?, description = ?, genre = ?, pages = ?, status = 'PENDING', review_note = NULL WHERE id = ?`,
+      title, description, genre.slice(0, 40), pages, id);
+    res.json({ manuscript: one('SELECT * FROM books WHERE id = ?', id) });
+  });
+
   app.delete('/api/author/manuscripts/:id', auth, requireRole('AUTHOR'), (req, res) => {
     const id = toId(req.params.id);
     const m = id && one('SELECT * FROM books WHERE id = ?', id);

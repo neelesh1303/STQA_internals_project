@@ -149,7 +149,7 @@ const NAV = [
   { route: 'author', label: 'Author Studio', icon: 'author', roles: ['AUTHOR'] },
   { route: 'librarian', label: 'Librarian Desk', icon: 'librarian', roles: ['LIBRARIAN'] },
   { route: 'notifications', label: 'Notifications', icon: 'bell', roles: ALL },
-  { route: 'qa', label: 'QA Lab', icon: 'qa', roles: ALL, tag: '20' },
+  { route: 'qa', label: 'QA Lab', icon: 'qa', roles: ALL },
 ];
 const VIEWS = {
   catalog: viewCatalog, shelf: viewShelf, requests: viewRequests, author: viewAuthor,
@@ -196,7 +196,7 @@ function renderShell() {
         <div class="nav-label">Library</div>
         ${links.map((n) => `<a href="#/${n.route}" data-route="${n.route}">${icon(n.icon)}<span class="lbl">${n.label}</span>${n.route === 'notifications' ? '<span class="count" id="nav-unread" hidden></span>' : ''}</a>`).join('')}
         <div class="nav-label">Quality</div>
-        <a href="#/qa" data-route="qa">${icon('qa')}<span class="lbl">QA Lab</span><span class="tag">20 TCs</span></a>
+        <a href="#/qa" data-route="qa">${icon('qa')}<span class="lbl">QA Lab</span><span class="tag">${TEST_CASES.length} TCs</span></a>
       </nav>
       <div class="sidebar-foot">
         <div class="user-card">${avatar(u.username)}<div class="who"><b>${esc(u.username)}</b><span>${esc(u.role)}</span></div>
@@ -251,7 +251,7 @@ function renderAuth() {
         <p class="lead">Borrow, read, review and request books. Authors submit manuscripts; librarians curate the catalogue. Every rule is checked by a live STQA test suite.</p>
       </div>
       <div class="feature-list">
-        <span>${icon('shield')} JWT &amp; role-based access</span><span>${icon('catalog')} Live catalogue</span><span>${icon('qa')} 20 executable test cases</span>
+        <span>${icon('shield')} JWT &amp; role-based access</span><span>${icon('catalog')} Live catalogue</span><span>${icon('qa')} ${TEST_CASES.length} executable test cases</span>
       </div>
       <div class="shelf" aria-hidden="true">${SPINES.map(([t, c, h, w], i) => `<span class="spine" style="background:${CLOTH[c]};height:${Math.round(h * 0.78)}px;width:${w}px">${esc(t)}</span>`).join('')}</div>
     </section>
@@ -652,7 +652,7 @@ async function viewAuthor(el) {
   </div>
   <div class="grid-side">
     <section class="panel">
-      <div class="panel-head"><h3>Submit a manuscript</h3></div>
+      <div class="panel-head"><h3 id="ms-head">Submit a manuscript</h3><button class="btn sm ghost" id="ms-cancel" type="button" hidden>Cancel edit</button></div>
       <form id="ms-form" novalidate>
         <div class="field"><label>Title *</label><input class="input" name="title" maxlength="200" placeholder="Your book's title"><span class="field-error"></span></div>
         <div class="form-row">
@@ -670,21 +670,36 @@ async function viewAuthor(el) {
           <div class="grow"><b>${esc(m.title)}</b><span class="muted" style="font-size:12.5px">${esc(m.genre)} · submitted ${timeAgo(m.created_at)}${m.status === 'APPROVED' ? ` · ${m.total_copies} copies` : ''}</span>
             ${m.review_note ? `<span style="font-size:12.5px">Librarian: <i>${esc(m.review_note)}</i></span>` : ''}
             <div class="controls">${statusPill(m.status)}${m.status === 'APPROVED' && m.review_count ? `<span class="rating-num">★ ${m.avg_rating} (${m.review_count})</span>` : ''}
-              ${m.status !== 'APPROVED' ? `<button class="btn sm ghost" data-withdraw="${m.id}">${icon('trash')} Withdraw</button>` : ''}</div>
+              ${m.status !== 'APPROVED' ? `<button class="btn sm ghost" data-edit="${m.id}">${icon('author')} Edit</button><button class="btn sm ghost" data-withdraw="${m.id}">${icon('trash')} Withdraw</button>` : ''}</div>
           </div></div>`).join('') : emptyState('✒️', 'No manuscripts yet', 'Submit your first manuscript for librarian review.')}
     </section>
   </div>`;
-  $('#ms-form', el).onsubmit = async (e) => {
+  const form = $('#ms-form', el);
+  let editing = null;
+  const setEditing = (m) => {
+    editing = m ? m.id : null;
+    form.reset(); fieldErrors(form, {});
+    if (m) { const f = form.elements; f.title.value = m.title; f.genre.value = m.genre; f.pages.value = m.pages; f.description.value = m.description; }
+    $('#ms-head', el).textContent = m ? `Edit “${m.title}”` : 'Submit a manuscript';
+    $('#ms-cancel', el).hidden = !m;
+    form.querySelector('[type=submit]').innerHTML = `${icon('author')} ${m ? (m.status === 'REJECTED' ? 'Save & resubmit' : 'Save changes') : 'Submit for review'}`;
+  };
+  $('#ms-cancel', el).onclick = () => setEditing(null);
+  form.onsubmit = async (e) => {
     e.preventDefault();
-    const f = e.target, d = formData(f);
+    const d = formData(form);
     if (d.pages === '') delete d.pages; else d.pages = Number(d.pages);
-    fieldErrors(f, {});
+    fieldErrors(form, {});
     try {
-      await busy(f.querySelector('[type=submit]'), () => api('POST', '/api/author/manuscripts', d));
-      toast('Manuscript submitted for review'); render();
-    } catch (err) { fieldErrors(f, err.data?.fields); errToast(err); }
+      await busy(form.querySelector('[type=submit]'), () => editing
+        ? api('PUT', `/api/author/manuscripts/${editing}`, d)
+        : api('POST', '/api/author/manuscripts', d));
+      toast(editing ? 'Manuscript updated and sent for review' : 'Manuscript submitted for review'); render();
+    } catch (err) { fieldErrors(form, err.data?.fields); errToast(err); }
   };
   el.onclick = async (e) => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed) { setEditing(manuscripts.find((m) => m.id === +ed.dataset.edit)); form.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const w = e.target.closest('[data-withdraw]'); if (!w) return;
     try { await api('DELETE', `/api/author/manuscripts/${w.dataset.withdraw}`); toast('Manuscript withdrawn', 'info'); render(); } catch (err) { errToast(err); }
   };
