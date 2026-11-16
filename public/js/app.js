@@ -112,10 +112,12 @@ function closeModal() { $('#modal-root').innerHTML = ''; }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
 // ---------------------------------------------------------------- shared components
+// Book-cloth palette: muted bindings, picked deterministically per book
+const CLOTH = ['#7c2d21', '#2f4a3a', '#22395a', '#8a6420', '#4b3a5e', '#3e4d55', '#6b3c26', '#2d5656', '#5a5a2c', '#7a4a5a'];
+const clothOf = (b) => CLOTH[((b.book_id ?? b.id ?? hueOf(b.title)) * 7) % CLOTH.length];
 function cover(b, cls = '') {
-  const h = b.cover_hue ?? hueOf(b.title);
-  return `<div class="cover ${cls}" style="--h:${h}"><span class="cover-genre">${esc(b.genre || '')}</span>
-    <span class="cover-title">${esc(b.title)}</span><span class="cover-author">${esc(b.author || '')}</span></div>`;
+  return `<div class="cover ${cls}" style="--c:${clothOf(b)}"><span class="cover-genre">${esc(b.genre || '')}</span>
+    <div class="cover-label"><span class="cover-title">${esc(b.title)}</span><span class="cover-author">${esc(b.author || '')}</span></div></div>`;
 }
 function stars(avg) {
   const n = Math.round(avg || 0);
@@ -123,7 +125,7 @@ function stars(avg) {
 }
 const avatar = (name) => `<span class="avatar" style="--h:${hueOf(name)}">${esc(String(name).slice(0, 2).toUpperCase())}</span>`;
 const statusPill = (s) => `<span class="pill ${{ APPROVED: 'ok', PENDING: 'warn', REJECTED: 'danger', ACTIVE: 'info', RETURNED: 'plain', LATE: 'warn' }[s] || ''}">${esc(s)}</span>`;
-const emptyState = (emoji, title, text = '') => `<div class="empty"><div class="big">${emoji}</div><h3>${esc(title)}</h3><p>${esc(text)}</p></div>`;
+const emptyState = (_mark, title, text = '') => `<div class="empty"><h3>${esc(title)}</h3><p>${esc(text)}</p></div>`;
 function fieldErrors(form, fields = {}) {
   $$('.field', form).forEach((f) => {
     const name = f.querySelector('[name]')?.name;
@@ -187,7 +189,7 @@ function renderShell() {
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="#/catalog">
-        <span class="brand-mark">${icon('catalog')}</span>
+        <span class="brand-mark">A</span>
         <span><span class="brand-name">Athenaeum</span><br><span class="brand-sub">Library System</span></span>
       </a>
       <nav class="nav">
@@ -213,9 +215,10 @@ function renderShell() {
     </div>
   </div>`;
   $('#logout').onclick = () => { signOut(); toast('Signed out', 'info'); };
-  const paintTheme = () => { $('#theme').innerHTML = icon(document.documentElement.dataset.theme === 'light' ? 'moon' : 'sun'); };
+  const current = () => document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const paintTheme = () => { $('#theme').innerHTML = icon(current() === 'light' ? 'moon' : 'sun'); };
   $('#theme').onclick = () => {
-    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    const next = current() === 'light' ? 'dark' : 'light';
     document.documentElement.dataset.theme = next; store.set('lib.theme', next); paintTheme();
   };
   paintTheme();
@@ -232,27 +235,29 @@ async function refreshUnread() {
 
 // ---------------------------------------------------------------- auth screen
 function renderAuth() {
-  const sample = [
-    { title: 'Frankenstein', author: 'Mary Shelley', genre: 'Fiction', cover_hue: 120 },
-    { title: 'The Pragmatic Programmer', author: 'Thomas & Hunt', genre: 'Technology', cover_hue: 255 },
-    { title: 'A Brief History of Time', author: 'Stephen Hawking', genre: 'Science', cover_hue: 330 },
+  // [title, cloth index, height px, width px]
+  const SPINES = [
+    ['Meditations', 3, 190, 34], ['Frankenstein', 1, 232, 40], ['Moby-Dick', 2, 250, 52], ['Dune', 6, 214, 46],
+    ['Sapiens', 0, 226, 42], ['Clean Code', 5, 200, 38], ['Pride and Prejudice', 4, 244, 44], ['The Time Machine', 7, 180, 30],
+    ['Atomic Habits', 8, 206, 36], ['The Selfish Gene', 9, 222, 40], ['Introduction to Algorithms', 2, 258, 60], ['Thinking, Fast and Slow', 0, 236, 44],
   ];
   $('#app').innerHTML = `
   <div class="auth">
     <section class="auth-art">
-      <div class="brand" style="padding:0"><span class="brand-mark">${icon('catalog')}</span><span class="brand-name">Athenaeum</span></div>
+      <div class="brand" style="padding:0"><span class="brand-mark">A</span><span><span class="brand-name">Athenaeum</span><br><span class="brand-sub">Reading room &amp; catalogue</span></span></div>
       <div>
-        <h1>Every book.<br>One <em>quiet</em> place.</h1>
-        <p class="lead">Borrow, read, review and request books — while authors publish and librarians curate. Built with a live STQA test lab.</p>
-        <div class="floating">${sample.map((b) => cover(b)).join('')}</div>
+        <p class="eyebrow">Library management system</p>
+        <h1 style="margin-top:12px">A library,<br><em>properly</em> kept.</h1>
+        <p class="lead">Borrow, read, review and request books. Authors submit manuscripts; librarians curate the catalogue. Every rule is checked by a live STQA test suite.</p>
       </div>
       <div class="feature-list">
-        <span>${icon('shield')} JWT + role-based access</span><span>${icon('catalog')} Live catalog</span><span>${icon('qa')} 20 executable test cases</span>
+        <span>${icon('shield')} JWT &amp; role-based access</span><span>${icon('catalog')} Live catalogue</span><span>${icon('qa')} 20 executable test cases</span>
       </div>
+      <div class="shelf" aria-hidden="true">${SPINES.map(([t, c, h, w], i) => `<span class="spine" style="background:${CLOTH[c]};height:${Math.round(h * 0.78)}px;width:${w}px">${esc(t)}</span>`).join('')}</div>
     </section>
     <section class="auth-panel">
       <div class="auth-card">
-        <p class="eyebrow">Welcome</p>
+        <p class="eyebrow">Members' entrance</p>
         <h2 id="auth-title">Sign in to your library</h2>
         <p class="muted">Use a demo account below or create your own.</p>
         <div class="tabs" role="tablist"><button class="active" data-tab="login">Sign in</button><button data-tab="register">Create account</button></div>
@@ -274,10 +279,10 @@ function renderAuth() {
         <div class="demo">
           <p>Demo accounts — click to fill</p>
           <div class="chips">
-            <button class="chip" data-demo="student_demo:Student@123">🎓 Student</button>
-            <button class="chip" data-demo="staff_demo:Staff@123">🧑‍🏫 Staff</button>
-            <button class="chip" data-demo="author_demo:Author@123">✒️ Author</button>
-            <button class="chip" data-demo="librarian:Library@123">🏛️ Librarian</button>
+            <button class="chip" data-demo="student_demo:Student@123">Student</button>
+            <button class="chip" data-demo="staff_demo:Staff@123">Staff</button>
+            <button class="chip" data-demo="author_demo:Author@123">Author</button>
+            <button class="chip" data-demo="librarian:Library@123">Librarian</button>
           </div>
         </div>
       </div>
@@ -826,8 +831,10 @@ async function viewQA(el) {
       <div class="section-cov">${sectionsCovered.map((s) => `<span class="pill plain" title="${esc(SECTIONS[s])}">§${s} ${esc(SECTIONS[s].split(/[ ,/&]/)[0])}</span>`).join('')}</div>
       <div class="progress"><span id="prog"></span></div>
     </div>
-    <div>
-      <div class="ring" id="ring"></div>
+    <div class="qa-score">
+      <div class="big" id="score">0<small>/${TEST_CASES.length}</small></div>
+      <div class="cap" id="score-cap">passed · not yet run</div>
+      <div class="tally" id="tally">${TEST_CASES.map((t) => `<i data-t="${t.id}" title="${t.id}"></i>`).join('')}</div>
       <div class="qa-legend"><span><i style="background:var(--ok)"></i><b id="n-pass">0</b> pass</span><span><i style="background:var(--danger)"></i><b id="n-fail">0</b> fail</span></div>
     </div>
   </section>
@@ -855,18 +862,14 @@ async function viewQA(el) {
     const vals = Object.values(R);
     const pass = vals.filter((r) => r.status === 'PASS').length, fail = vals.filter((r) => r.status === 'FAIL').length;
     const done = pass + fail, total = TEST_CASES.length;
-    const C = 2 * Math.PI * 62;
-    const pArc = (pass / total) * C, fArc = (fail / total) * C;
-    $('#ring', el).innerHTML = `<svg width="150" height="150" viewBox="0 0 150 150">
-      <circle cx="75" cy="75" r="62" fill="none" stroke="var(--surface-2)" stroke-width="12"/>
-      <circle cx="75" cy="75" r="62" fill="none" stroke="var(--ok)" stroke-width="12" stroke-linecap="round" stroke-dasharray="${pArc} ${C}" style="transition:stroke-dasharray .4s"/>
-      <circle cx="75" cy="75" r="62" fill="none" stroke="var(--danger)" stroke-width="12" stroke-dasharray="${fArc} ${C}" stroke-dashoffset="${-pArc}"/>
-    </svg><div class="lbl"><div><b>${done ? Math.round((pass / done) * 100) : 0}%</b><span>${done}/${total} run</span></div></div>`;
+    $('#score', el).innerHTML = `${pass}<small>/${total}</small>`;
+    $('#score-cap', el).textContent = done ? `passed · ${done} of ${total} run` : 'passed · not yet run';
+    $$('#tally i', el).forEach((sq) => { sq.className = R[sq.dataset.t]?.status || ''; });
     $('#n-pass', el).textContent = pass; $('#n-fail', el).textContent = fail;
     $('#prog', el).style.width = `${(done / total) * 100}%`;
   };
   const runOne = async (tc) => {
-    R[tc.id] = { status: 'RUNNING' }; paintRow(tc.id);
+    R[tc.id] = { status: 'RUNNING' }; paintRow(tc.id); paintSummary();
     R[tc.id] = await runCase(tc, '');
     paintRow(tc.id); paintSummary();
   };
