@@ -1,0 +1,19 @@
+{
+  "name": "athenaeum-library",
+  "version": "1.0.0",
+  "description": "Library Management System with a live STQA test lab (20 selected test cases)",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings --watch server/index.js",
+    "test": "node --no-warnings --test tests/stqa.test.js",
+    "report": "node --no-warnings scripts/report.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
