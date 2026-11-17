@@ -829,17 +829,68 @@ async function viewLibrarian(el) {
 }
 
 // ---------------------------------------------------------------- QA lab
+const QA_FILTERS = {
+  all: { label: 'All cases', match: () => true },
+  TC: { label: 'Functional (TC)', match: (t) => !t.kind },
+  BB: { label: 'Black box', match: (t) => t.kind === 'BB' },
+  WB: { label: 'White box', match: (t) => t.kind === 'WB' },
+};
+
+// Explanation panels shown above the table on the Black box / White box tabs
+function qaExplainer(filter) {
+  const chip = (id) => `<span class="tc-chip" data-chip="${id}">${id}</span>`;
+  const seg = (cls, label, range, ids) => `<div class="part ${cls}"><b>${label}</b><span>${range}</span><div>${ids.map(chip).join('')}</div></div>`;
+  if (filter === 'BB') return `
+  <section class="panel qa-explain">
+    <p class="eyebrow">Black box testing</p>
+    <h3>Tested from the specification only. We don't look at the code.</h3>
+    <p class="muted">We send inputs and compare outputs with the requirement. The cases come from <b>equivalence partitioning</b> (one value from each valid or invalid class) and <b>boundary value analysis</b> (values at and just past each limit, where bugs are most likely).</p>
+    <div class="partition"><div class="plabel">Rule 1: password length must be <b>6–72</b> characters</div>
+      <div class="parts">${seg('bad', 'Invalid', '≤ 5 chars', ['BB01'])}${seg('good', 'Valid', '6 … 72 chars', ['BB02', 'BB03'])}${seg('bad', 'Invalid', '≥ 73 chars', ['BB04'])}</div></div>
+    <div class="partition"><div class="plabel">Rule 2: review rating must be a <b>whole number from 1 to 5</b></div>
+      <div class="parts">${seg('bad', 'Invalid', '≤ 0', ['BB05'])}${seg('good', 'Valid', '1 … 5', ['BB06', 'BB07'])}${seg('bad', 'Invalid', '≥ 6', ['BB08'])}${seg('bad', 'Invalid class', 'decimals', ['BB09'])}</div></div>
+  </section>`;
+  if (filter === 'WB') {
+    const L = (code, id) => `<div class="cl${id ? ' br' : ''}"${id ? ` data-line="${id}"` : ''}><code>${esc(code)}</code>${id ? chip(id) : ''}</div>`;
+    return `
+  <section class="panel qa-explain">
+    <p class="eyebrow">White box testing</p>
+    <h3>Tested from the source code. Every branch must be executed.</h3>
+    <p class="muted">These cases come from the code of the borrow endpoint, <code>POST /api/loans</code> in <code>server/app.js</code>. It has 5 decisions, so there are <b>6 paths</b>. Each WB case forces one of them, giving <b>100% branch coverage</b>. Run them to see each branch light up.</p>
+    <div class="code-wrap"><div class="codebox">
+      ${L("app.post('/api/loans', auth, requireRole(...READERS), (req, res) => {")}
+      ${L('  const bookId = toId(req.body.bookId);')}
+      ${L("  if (!bookId) → 400 'A valid bookId is required'", 'WB01')}
+      ${L("  const book = SELECT … WHERE id = ? AND status = 'APPROVED'")}
+      ${L("  if (!book) → 404 'Book not found'", 'WB02')}
+      ${L("  if (user already has this book) → 409 'already have an active loan'", 'WB03')}
+      ${L('  const { c } = COUNT active loans of user')}
+      ${L("  if (c >= MAX_ACTIVE_LOANS) → 409 'Borrow limit reached'", 'WB04')}
+      ${L('  const dec = UPDATE books SET available_copies - 1 WHERE available_copies > 0')}
+      ${L("  if (dec.changes !== 1) → 409 'No copies available'", 'WB05')}
+      ${L('  INSERT loan (ACTIVE) · notify user → 201', 'WB06')}
+      ${L('});')}
+    </div>
+    <div class="coverage"><div class="big" id="cov">0<small>/6</small></div><div class="cap">paths covered</div><div class="progress"><span id="cov-bar"></span></div></div></div>
+  </section>`;
+  }
+  return '';
+}
+
 async function viewQA(el) {
   const R = state.qa;
+  const filter = QA_FILTERS[state.qaFilter] ? state.qaFilter : 'all';
+  const LIST = TEST_CASES.filter(QA_FILTERS[filter].match);
+  const count = (k) => TEST_CASES.filter(QA_FILTERS[k].match).length;
   const sectionsCovered = [...new Set(TEST_CASES.map((t) => t.section))];
   el.innerHTML = `
   <section class="panel qa-hero">
     <div>
       <p class="eyebrow">STQA · Live test execution</p>
       <h2 class="display">QA Lab</h2>
-      <p class="muted">${TEST_CASES.length} test cases selected from all ${sectionsCovered.length} sections of the STQA test document. Each one calls this server's real REST API, creates its own throwaway users and data, and cleans up afterwards. The <b>Actual Result</b> and <b>Status</b> columns are filled in from what the server returns.</p>
+      <p class="muted">${TEST_CASES.length} test cases: ${count('TC')} functional cases selected from the STQA test document, plus ${count('BB')} <b>black box</b> and ${count('WB')} <b>white box</b> cases. Each one calls this server's real REST API, creates its own throwaway users and data, and cleans up afterwards. The <b>Actual Result</b> and <b>Status</b> columns are filled in from what the server returns.</p>
       <div class="actions" style="margin-top:16px">
-        <button class="btn primary" id="run-all">${icon('play')} Run all ${TEST_CASES.length}</button>
+        <button class="btn primary" id="run-all">${icon('play')} Run ${filter === 'all' ? 'all ' : ''}${LIST.length}</button>
         <button class="btn" id="export">${icon('download')} Export CSV</button>
         <button class="btn ghost" id="reset">Reset</button>
       </div>
@@ -847,17 +898,19 @@ async function viewQA(el) {
       <div class="progress"><span id="prog"></span></div>
     </div>
     <div class="qa-score">
-      <div class="big" id="score">0<small>/${TEST_CASES.length}</small></div>
+      <div class="big" id="score">0<small>/${LIST.length}</small></div>
       <div class="cap" id="score-cap">passed · not yet run</div>
-      <div class="tally" id="tally">${TEST_CASES.map((t) => `<i data-t="${t.id}" title="${t.id}"></i>`).join('')}</div>
+      <div class="tally" id="tally">${LIST.map((t) => `<i data-t="${t.id}" title="${t.id}"></i>`).join('')}</div>
       <div class="qa-legend"><span><i style="background:var(--ok)"></i><b id="n-pass">0</b> pass</span><span><i style="background:var(--danger)"></i><b id="n-fail">0</b> fail</span></div>
     </div>
   </section>
+  <div class="tabs qa-tabs">${Object.entries(QA_FILTERS).map(([k, f]) => `<button data-filter="${k}" class="${k === filter ? 'active' : ''}">${f.label} <span class="n">${count(k)}</span></button>`).join('')}</div>
+  ${qaExplainer(filter)}
   <section class="panel" style="padding:6px 6px 0">
     <div class="table-wrap"><table class="table qa-table">
       <thead><tr><th>TC ID</th><th>Test Scenario</th><th>Test Data</th><th>Expected Result</th><th>Actual Result</th><th>Status</th><th></th></tr></thead>
-      <tbody>${TEST_CASES.map((t) => `<tr id="row-${t.id}"><td class="id">${t.id}</td>
-        <td><b>${esc(t.scenario)}</b><div class="sec">§${t.section} ${esc(SECTIONS[t.section])}</div></td>
+      <tbody>${LIST.map((t) => `<tr id="row-${t.id}"><td class="id">${t.id}</td>
+        <td><b>${esc(t.scenario)}</b><div class="sec">${t.kind ? `<span class="kind ${t.kind}">${t.kind === 'BB' ? 'Black box' : 'White box'}</span> ` : ''}§${t.section} ${esc(SECTIONS[t.section])}</div></td>
         <td class="muted">${esc(t.data)}</td><td>${esc(t.expected)}</td>
         <td class="actual" data-actual></td><td class="status-cell" data-status></td>
         <td><button class="btn sm ghost" data-run="${t.id}" title="Run ${t.id}" aria-label="Run ${t.id}">${icon('play')}</button></td></tr>`).join('')}</tbody>
@@ -872,11 +925,14 @@ async function viewQA(el) {
     $('[data-status]', row).innerHTML = !r ? '<span class="pill plain">Not run</span>'
       : r.status === 'RUNNING' ? '<span class="pill accent"><span class="spinner sm"></span> Running</span>'
       : `<span class="pill ${r.status === 'PASS' ? 'ok' : 'danger'}">${r.status}</span> <span class="muted" style="font-size:11px">${r.ms}ms</span>`;
+    $$(`[data-chip="${id}"], [data-line="${id}"]`, el).forEach((n) => { n.classList.remove('PASS', 'FAIL', 'RUNNING'); if (r?.status) n.classList.add(r.status); });
   };
   const paintSummary = () => {
-    const vals = Object.values(R);
+    const vals = LIST.map((t) => R[t.id]).filter(Boolean);
     const pass = vals.filter((r) => r.status === 'PASS').length, fail = vals.filter((r) => r.status === 'FAIL').length;
-    const done = pass + fail, total = TEST_CASES.length;
+    const done = pass + fail, total = LIST.length;
+    const cov = $('#cov', el);
+    if (cov) { cov.innerHTML = `${pass}<small>/${total}</small>`; $('#cov-bar', el).style.width = `${(pass / total) * 100}%`; }
     $('#score', el).innerHTML = `${pass}<small>/${total}</small>`;
     $('#score-cap', el).textContent = done ? `passed · ${done} of ${total} run` : 'passed · not yet run';
     $$('#tally i', el).forEach((sq) => { sq.className = R[sq.dataset.t]?.status || ''; });
@@ -888,25 +944,26 @@ async function viewQA(el) {
     R[tc.id] = await runCase(tc, '');
     paintRow(tc.id); paintSummary();
   };
-  TEST_CASES.forEach((t) => paintRow(t.id)); paintSummary();
+  LIST.forEach((t) => paintRow(t.id)); paintSummary();
 
+  $$('[data-filter]', el).forEach((b) => { b.onclick = () => { state.qaFilter = b.dataset.filter; viewQA(el); }; });
   $('#run-all', el).onclick = (e) => busy(e.currentTarget, async () => {
-    for (const k of Object.keys(R)) delete R[k];
-    TEST_CASES.forEach((t) => paintRow(t.id)); paintSummary();
-    for (const tc of TEST_CASES) { if (!el.isConnected) return; await runOne(tc); }
-    const pass = Object.values(R).filter((r) => r.status === 'PASS').length;
-    toast(`${pass}/${TEST_CASES.length} test cases passed`, pass === TEST_CASES.length ? 'success' : 'error');
+    for (const t of LIST) delete R[t.id];
+    LIST.forEach((t) => paintRow(t.id)); paintSummary();
+    for (const tc of LIST) { if (!el.isConnected) return; await runOne(tc); }
+    const pass = LIST.filter((t) => R[t.id]?.status === 'PASS').length;
+    toast(`${pass}/${LIST.length} test cases passed`, pass === LIST.length ? 'success' : 'error');
     refreshUnread();
   });
   el.querySelector('.qa-table').onclick = (e) => {
     const b = e.target.closest('[data-run]'); if (!b) return;
     busy(b, () => runOne(TEST_CASES.find((t) => t.id === b.dataset.run)));
   };
-  $('#reset', el).onclick = () => { for (const k of Object.keys(R)) delete R[k]; TEST_CASES.forEach((t) => paintRow(t.id)); paintSummary(); };
+  $('#reset', el).onclick = () => { for (const t of LIST) delete R[t.id]; LIST.forEach((t) => paintRow(t.id)); paintSummary(); };
   $('#export', el).onclick = () => {
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [['TC ID', 'Section', 'Test Scenario', 'Test Data', 'Expected Result', 'Actual Result', 'Status', 'Duration (ms)'],
-      ...TEST_CASES.map((t) => [t.id, `${t.section}. ${SECTIONS[t.section]}`, t.scenario, t.data, t.expected, R[t.id]?.actual || '', R[t.id]?.status || 'NOT RUN', R[t.id]?.ms ?? ''])];
+      ...LIST.map((t) => [t.id, `${t.section}. ${SECTIONS[t.section]}`, t.scenario, t.data, t.expected, R[t.id]?.actual || '', R[t.id]?.status || 'NOT RUN', R[t.id]?.ms ?? ''])];
     const blob = new Blob(['﻿' + rows.map((r) => r.map(cell).join(',')).join('\n')], { type: 'text/csv' });
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `STQA_Results_${new Date().toISOString().slice(0, 10)}.csv` });
     a.click(); URL.revokeObjectURL(a.href);

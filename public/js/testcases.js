@@ -15,6 +15,8 @@ export const SECTIONS = {
   10: 'Notifications & Recommendations',
   11: 'Librarian Administration & Statistics',
   12: 'Validation, Boundary, Negative & Integration',
+  13: 'Black Box Testing (BVA & Equivalence Partitioning)',
+  14: 'White Box Testing (Branch Coverage of POST /api/loans)',
 };
 
 export const DEMO_ACCOUNTS = {
@@ -77,6 +79,14 @@ function createContext(call) {
       const r = await call('POST', '/api/loans', { token, body: { bookId } });
       if (r.status === 201) cleanups.push(() => call('POST', `/api/loans/${r.data.loan.id}/return`, { token }));
       return r;
+    },
+    // Fresh catalog book with a known number of copies (removed again after the case)
+    async newBook(copies = 5) {
+      const lib = await ctx.librarian();
+      const r = await call('POST', '/api/admin/books', { token: lib, body: { title: `QA Book ${rnd()}`, author: 'QA Fixture', genre: 'QA', copies } });
+      if (r.status !== 201) throw new Error(`Setup failed: add book → ${short(r)}`);
+      cleanups.push(() => call('DELETE', `/api/admin/books/${r.data.book.id}`, { token: lib }));
+      return r.data.book.id;
     },
     async submitManuscript(token, title) {
       const r = await call('POST', '/api/author/manuscripts', { token, body: { title, genre: 'QA', description: 'Automated STQA fixture' } });
@@ -642,7 +652,75 @@ TEST_CASES.push(
     },
   },
 );
-TEST_CASES.sort((a, b) => a.id.localeCompare(b.id));
+
+// ---------------------------------------------------------------- black box (BB) & white box (WB)
+// Black box: designed only from the specification (inputs → outputs), using
+// boundary value analysis and equivalence partitioning.
+const registerWithPassword = async (ctx, password) => {
+  const username = `qa_${ctx.uid()}`;
+  return ctx.call('POST', '/api/auth/register', { body: { username, email: `${username}@qa.test`, password } });
+};
+const reviewWithRating = async (ctx, rating) => {
+  const s = await ctx.newUser();
+  const bookId = await ctx.newBook();
+  return ctx.call('POST', `/api/books/${bookId}/reviews`, { token: s.token, body: { rating, text: 'Black box test' } });
+};
+const expectStatus = (r, code) => {
+  check(r.status === code, short(r));
+  return `HTTP ${r.status}${r.data?.error ? ` — "${r.data.error}"` : ''}`;
+};
+const bb = (id, scenario, data, expected, code, partition, fn) => ({
+  id, section: 13, kind: 'BB', partition, scenario, data, expected,
+  async run(ctx) { return expectStatus(await fn(ctx), code); },
+});
+TEST_CASES.push(
+  bb('BB01', 'Password length 5 (just below minimum)', 'password = "abcde" (5 chars)', 'Rejected (400)', 400, 'pw-low', (c) => registerWithPassword(c, 'abcde')),
+  bb('BB02', 'Password length 6 (minimum boundary)', 'password = "abcdef" (6 chars)', 'Account created (201)', 201, 'pw-ok', (c) => registerWithPassword(c, 'abcdef')),
+  bb('BB03', 'Password length 72 (maximum boundary)', 'password = 72 × "a"', 'Account created (201)', 201, 'pw-ok', (c) => registerWithPassword(c, 'a'.repeat(72))),
+  bb('BB04', 'Password length 73 (just above maximum)', 'password = 73 × "a"', 'Rejected (400)', 400, 'pw-high', (c) => registerWithPassword(c, 'a'.repeat(73))),
+  bb('BB05', 'Review rating 0 (below minimum)', 'rating = 0', 'Rejected (400)', 400, 'rt-low', (c) => reviewWithRating(c, 0)),
+  bb('BB06', 'Review rating 1 (minimum boundary)', 'rating = 1', 'Review saved (201)', 201, 'rt-ok', (c) => reviewWithRating(c, 1)),
+  bb('BB07', 'Review rating 5 (maximum boundary)', 'rating = 5', 'Review saved (201)', 201, 'rt-ok', (c) => reviewWithRating(c, 5)),
+  bb('BB08', 'Review rating 6 (above maximum)', 'rating = 6', 'Rejected (400)', 400, 'rt-high', (c) => reviewWithRating(c, 6)),
+  bb('BB09', 'Review rating 3.5 (invalid class: decimal)', 'rating = 3.5', 'Rejected (400)', 400, 'rt-dec', (c) => reviewWithRating(c, 3.5)),
+);
+
+// White box: designed from the source of POST /api/loans (server/app.js) so that
+// every decision is executed both ways — full branch coverage.
+const wb = (id, branch, scenario, data, expected, run) => ({ id, section: 14, kind: 'WB', branch, scenario, data, expected, run });
+TEST_CASES.push(
+  wb('WB01', 1, 'Branch 1 TRUE: if (!bookId)', 'bookId = "abc"', '400 "A valid bookId is required"', async (ctx) => {
+    const s = await ctx.newUser();
+    return expectStatus(await ctx.borrow(s.token, 'abc'), 400);
+  }),
+  wb('WB02', 2, 'Branch 2 TRUE: if (!book)', 'bookId = 999999 (not in catalog)', '404 "Book not found"', async (ctx) => {
+    const s = await ctx.newUser();
+    return expectStatus(await ctx.borrow(s.token, 999999), 404);
+  }),
+  wb('WB03', 3, 'Branch 3 TRUE: active loan for same book exists', 'Borrow the same book twice', '409 "already have an active loan"', async (ctx) => {
+    const s = await ctx.newUser(); const b = await ctx.newBook();
+    check((await ctx.borrow(s.token, b)).status === 201, 'Setup: first borrow failed');
+    return expectStatus(await ctx.borrow(s.token, b), 409);
+  }),
+  wb('WB04', 4, `Branch 4 TRUE: if (c >= MAX_ACTIVE_LOANS)`, `Borrow ${MAX_ACTIVE_LOANS} books, then one more`, '409 "Borrow limit reached"', async (ctx) => {
+    const s = await ctx.newUser();
+    for (let i = 0; i < MAX_ACTIVE_LOANS; i++) check((await ctx.borrow(s.token, await ctx.newBook())).status === 201, 'Setup borrow failed');
+    return expectStatus(await ctx.borrow(s.token, await ctx.newBook()), 409);
+  }),
+  wb('WB05', 5, 'Branch 5 TRUE: if (dec.changes !== 1)', 'Book with 1 copy already borrowed by another user', '409 "No copies available"', async (ctx) => {
+    const b = await ctx.newBook(1);
+    check((await ctx.borrow((await ctx.newUser()).token, b)).status === 201, 'Setup borrow failed');
+    return expectStatus(await ctx.borrow((await ctx.newUser()).token, b), 409);
+  }),
+  wb('WB06', 6, 'All branches FALSE → loan created', 'Valid book with 2 copies, new user', '201, ACTIVE loan, copies 2 → 1', async (ctx) => {
+    const s = await ctx.newUser(); const b = await ctx.newBook(2);
+    const r = await ctx.borrow(s.token, b);
+    const left = (await ctx.book(s.token, b)).available_copies;
+    check(r.status === 201 && r.data.loan.status === 'ACTIVE' && left === 1, `${short(r)}; copies left ${left}`);
+    return `HTTP 201 — loan ACTIVE; available_copies 2 → ${left}`;
+  }),
+);
+TEST_CASES.sort((a, b) => a.section - b.section || a.id.localeCompare(b.id));
 
 // ---------------------------------------------------------------- runner
 export async function runCase(tc, base = '') {

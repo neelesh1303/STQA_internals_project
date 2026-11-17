@@ -1,10 +1,10 @@
 # STQA Execution Report — Athenaeum Library Management System
 
-Executed: 2026-11-16 13:26:28 UTC · Environment: Node v24.14.0, fresh in-memory SQLite · Result: **40/40 passed**
+Executed: 2026-11-17 09:42:58 UTC · Environment: Node v24.14.0, fresh in-memory SQLite · Result: **55/55 passed**
 
 | TC ID | Section | Test Scenario | Test Data | Expected Result | Actual Result | Status |
 |---|---|---|---|---|---|---|
-| TC001 | 1. Registration, Login & Authentication | Register with valid student details | Unique username/email + valid password | Account created | HTTP 201 — account "qa_5bk1s1" created with role STUDENT; JWT issued | **PASS** |
+| TC001 | 1. Registration, Login & Authentication | Register with valid student details | Unique username/email + valid password | Account created | HTTP 201 — account "qa_pfstht" created with role STUDENT; JWT issued | **PASS** |
 | TC003 | 1. Registration, Login & Authentication | Register with duplicate username | Existing username, different email | Registration rejected | HTTP 409 — "Username is already taken" | **PASS** |
 | TC009 | 1. Registration, Login & Authentication | Login with wrong password | Valid username + wrong password | Login rejected | HTTP 401 — "Invalid username or password"; no token issued | **PASS** |
 | TC012 | 1. Registration, Login & Authentication | Use malformed JWT | Bearer "abc" and "not.a.jwt" | Request rejected | All 3 malformed tokens → HTTP 401/401/401 (incl. alg "none" token) | **PASS** |
@@ -38,9 +38,24 @@ Executed: 2026-11-16 13:26:28 UTC · Environment: Node v24.14.0, fresh in-memory
 | TC105 | 8. Reviews & Sentiment | Duplicate review by same user | Same book + same user reviews twice | Duplicate handled according to rule | 1st review HTTP 201; 2nd HTTP 409 "You have already reviewed this book" (rule: one review per user per book) | **PASS** |
 | TC115 | 9. Reading, Highlights & Bookmarks | Remove own bookmark | Existing bookmark | Bookmark removed | DELETE HTTP 200; bookmark list is now empty | **PASS** |
 | TC116 | 9. Reading, Highlights & Bookmarks | Add duplicate bookmark | Same book, same page twice | Duplicate handled | 1st bookmark HTTP 201; duplicate HTTP 409 "Page 12 is already bookmarked"; only 1 stored | **PASS** |
-| TC121 | 10. Notifications & Recommendations | Receive borrow notification | Successful borrow | Notification generated | Unread BORROW notification: "You borrowed "A Brief History of Time". It is due back on Mon Nov 30 2026." | **PASS** |
+| TC121 | 10. Notifications & Recommendations | Receive borrow notification | Successful borrow | Notification generated | Unread BORROW notification: "You borrowed "A Brief History of Time". It is due back on Tue Dec 01 2026." | **PASS** |
 | TC125 | 10. Notifications & Recommendations | Notification isolation | User A reads/marks User B's notification | Access denied / no leakage | HTTP 404 for A; A's list excludes B's notification; B's stays unread | **PASS** |
 | TC134 | 11. Librarian Administration & Statistics | Unauthorized user manages users | Student → GET /api/admin/users, POST /api/admin/books | Access denied | List users → HTTP 403; add book → HTTP 403 | **PASS** |
 | TC137 | 11. Librarian Administration & Statistics | View borrowing statistics | Librarian account; one new loan created | Correct borrowing metrics displayed | HTTP 200 — activeLoans 3→4, totalLoans 21→22 | **PASS** |
 | TC146 | 12. Validation, Boundary, Negative & Integration | Malformed JSON request | {"username": "x",   (truncated JSON) | 400 / error handled | HTTP 400 — "Malformed JSON request body" (no stack trace leaked) | **PASS** |
 | TC148 | 12. Validation, Boundary, Negative & Integration | SQL/script-like input in search | ' OR 1=1 --   /   <script>alert(1)</script> | Input handled safely | Injection/wildcard queries returned HTTP 200 with 0 rows (no leakage); script username → HTTP 400 | **PASS** |
+| BB01 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Password length 5 (just below minimum) | password = "abcde" (5 chars) | Rejected (400) | HTTP 400 — "Validation failed" | **PASS** |
+| BB02 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Password length 6 (minimum boundary) | password = "abcdef" (6 chars) | Account created (201) | HTTP 201 | **PASS** |
+| BB03 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Password length 72 (maximum boundary) | password = 72 × "a" | Account created (201) | HTTP 201 | **PASS** |
+| BB04 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Password length 73 (just above maximum) | password = 73 × "a" | Rejected (400) | HTTP 400 — "Validation failed" | **PASS** |
+| BB05 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Review rating 0 (below minimum) | rating = 0 | Rejected (400) | HTTP 400 — "Rating must be a whole number from 1 to 5" | **PASS** |
+| BB06 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Review rating 1 (minimum boundary) | rating = 1 | Review saved (201) | HTTP 201 | **PASS** |
+| BB07 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Review rating 5 (maximum boundary) | rating = 5 | Review saved (201) | HTTP 201 | **PASS** |
+| BB08 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Review rating 6 (above maximum) | rating = 6 | Rejected (400) | HTTP 400 — "Rating must be a whole number from 1 to 5" | **PASS** |
+| BB09 | 13. Black Box Testing (BVA & Equivalence Partitioning) | Review rating 3.5 (invalid class: decimal) | rating = 3.5 | Rejected (400) | HTTP 400 — "Rating must be a whole number from 1 to 5" | **PASS** |
+| WB01 | 14. White Box Testing (Branch Coverage of POST /api/loans) | Branch 1 TRUE: if (!bookId) | bookId = "abc" | 400 "A valid bookId is required" | HTTP 400 — "A valid bookId is required" | **PASS** |
+| WB02 | 14. White Box Testing (Branch Coverage of POST /api/loans) | Branch 2 TRUE: if (!book) | bookId = 999999 (not in catalog) | 404 "Book not found" | HTTP 404 — "Book not found in the approved catalog" | **PASS** |
+| WB03 | 14. White Box Testing (Branch Coverage of POST /api/loans) | Branch 3 TRUE: active loan for same book exists | Borrow the same book twice | 409 "already have an active loan" | HTTP 409 — "You already have an active loan for this book" | **PASS** |
+| WB04 | 14. White Box Testing (Branch Coverage of POST /api/loans) | Branch 4 TRUE: if (c >= MAX_ACTIVE_LOANS) | Borrow 3 books, then one more | 409 "Borrow limit reached" | HTTP 409 — "Borrow limit reached: maximum 3 active loans" | **PASS** |
+| WB05 | 14. White Box Testing (Branch Coverage of POST /api/loans) | Branch 5 TRUE: if (dec.changes !== 1) | Book with 1 copy already borrowed by another user | 409 "No copies available" | HTTP 409 — "No copies of this book are currently available" | **PASS** |
+| WB06 | 14. White Box Testing (Branch Coverage of POST /api/loans) | All branches FALSE → loan created | Valid book with 2 copies, new user | 201, ACTIVE loan, copies 2 → 1 | HTTP 201 — loan ACTIVE; available_copies 2 → 1 | **PASS** |
